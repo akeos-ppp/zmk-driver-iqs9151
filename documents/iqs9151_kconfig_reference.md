@@ -37,12 +37,12 @@
 |Symbol|Type|Default|役割|
 | - | - | - | - |
 |`CONFIG_INPUT_IQS9151_1F_TAP_ENABLE`|bool|`y`|1F Tap 有効/無効|
-|`CONFIG_INPUT_IQS9151_1F_TAP_MAX_MS`|int|`250`|1F Tap/2回目Tap 判定の最大時間|
+|`CONFIG_INPUT_IQS9151_1F_TAP_MAX_MS`|int|`500`|1F Tap/2回目Tap 判定の最大時間|
 |`CONFIG_INPUT_IQS9151_1F_TAP_MOVE`|int|`50`|1F Tap 移動しきい値|
 |`CONFIG_INPUT_IQS9151_1F_PRESSHOLD_ENABLE`|bool|`y`|1F deferred-click/drag 有効/無効|
 |`CONFIG_INPUT_IQS9151_1F_TAPDRAG_GAP_MAX_MS`|int|`160`|1F Tap後にBTN0を保持して2回目タッチを待つ最大時間|
 |`CONFIG_INPUT_IQS9151_2F_TAP_ENABLE`|bool|`y`|2F Tap 有効/無効|
-|`CONFIG_INPUT_IQS9151_2F_TAP_MAX_MS`|int|`250`|2F Tap 最大時間|
+|`CONFIG_INPUT_IQS9151_2F_TAP_MAX_MS`|int|`500`|2F Tap 最大時間|
 |`CONFIG_INPUT_IQS9151_2F_TAP_MOVE`|int|`50`|2F Tap 移動しきい値（重心/距離）|
 |`CONFIG_INPUT_IQS9151_2F_PRESSHOLD_ENABLE`|bool|`y`|2F deferred-click/drag 有効/無効|
 |`CONFIG_INPUT_IQS9151_2F_TAPDRAG_GAP_MAX_MS`|int|`200`|2F Tap後にBTN1を保持して2回目2Fタッチを待つ最大時間|
@@ -53,11 +53,33 @@
 |`CONFIG_INPUT_IQS9151_2F_PINCH_START_DISTANCE`|int|`100`|2F Pinch 開始しきい値|
 |`CONFIG_INPUT_IQS9151_2F_PINCH_WHEEL_GAIN_X10`|int|`40`|2F Pinch `REL_WHEEL` ゲイン（x10）|
 |`CONFIG_INPUT_IQS9151_3F_TAP_ENABLE`|bool|`y`|3F Tap 有効/無効|
-|`CONFIG_INPUT_IQS9151_3F_TAP_MAX_MS`|int|`200`|3F Tap 最大時間|
+|`CONFIG_INPUT_IQS9151_3F_TAP_MAX_MS`|int|`400`|3F Tap 最大時間|
 |`CONFIG_INPUT_IQS9151_3F_TAP_MOVE`|int|`35`|3F Tap 移動しきい値|
 |`CONFIG_INPUT_IQS9151_3F_PRESSHOLD_ENABLE`|bool|`y`|3F deferred-click/drag 有効/無効|
 |`CONFIG_INPUT_IQS9151_3F_TAPDRAG_GAP_MAX_MS`|int|`200`|3F Tap後にBTN2を保持して2回目3Fタッチを待つ最大時間|
 |`CONFIG_INPUT_IQS9151_3F_SWIPE_THRESHOLD`|int|`200`|3F Swipe しきい値|
+
+### 4.1 Long-press Hold（長押しホールド）
+
+指を置いたまま静止させて N ms でボタンを押下する方式。TapDrag とは独立で、
+併用可能。既定では無効。
+
+|Symbol|Type|Default|役割|
+| - | - | - | - |
+|`CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE`|bool|`n`|長押しホールド 有効/無効（1F=BTN0 / 2F=BTN1 / 3F=BTN2）|
+|`CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_MS`|int|`500`|長押しホールド成立時間の共通既定値（`100..2000`）|
+|`CONFIG_INPUT_IQS9151_1F_LONG_PRESS_HOLD_MS`|int|共通値|1F 長押しホールド成立時間の個別上書き|
+|`CONFIG_INPUT_IQS9151_2F_LONG_PRESS_HOLD_MS`|int|共通値|2F 長押しホールド成立時間の個別上書き|
+|`CONFIG_INPUT_IQS9151_3F_LONG_PRESS_HOLD_MS`|int|共通値|3F 長押しホールド成立時間の個別上書き|
+|`CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_MOVE`|int|`100`|長押し判定中に許容する累積移動量（`0..500`）|
+
+設定例（1本指だけ 350ms、2F/3F は 500ms のまま）:
+
+```
+CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE=y
+CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_MS=500
+CONFIG_INPUT_IQS9151_1F_LONG_PRESS_HOLD_MS=350
+```
 
 ## 5. Inertia
 
