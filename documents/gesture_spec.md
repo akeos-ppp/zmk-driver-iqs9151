@@ -37,15 +37,15 @@
 - 共通:
   - `IQS9151_TAP_REENTRY_WINDOW_MS = 30` (固定)
 - 1F:
-  - `ONE_FINGER_TAP_MAX_MS = 120` (`CONFIG_INPUT_IQS9151_1F_TAP_MAX_MS`)
-  - `ONE_FINGER_TAP_MOVE = 25` (`CONFIG_INPUT_IQS9151_1F_TAP_MOVE`)
-  - `ONE_FINGER_CLICK_HOLD_MAX_MS = 230`
+  - `ONE_FINGER_TAP_MAX_MS = 500` (`CONFIG_INPUT_IQS9151_1F_TAP_MAX_MS`)
+  - `ONE_FINGER_TAP_MOVE = 50` (`CONFIG_INPUT_IQS9151_1F_TAP_MOVE`)
+  - `ONE_FINGER_CLICK_HOLD_MAX_MS = 160`
     (`CONFIG_INPUT_IQS9151_1F_TAPDRAG_GAP_MAX_MS`)
-  - `ONE_FINGER_TAPDRAG_GAP_MAX_MS = 230`
+  - `ONE_FINGER_TAPDRAG_GAP_MAX_MS = 160`
     (`CONFIG_INPUT_IQS9151_1F_TAPDRAG_GAP_MAX_MS`)
 - 2F:
-  - `TWO_FINGER_TAP_MAX_MS = 130` (`CONFIG_INPUT_IQS9151_2F_TAP_MAX_MS`)
-  - `TWO_FINGER_TAP_MOVE = 30` (`CONFIG_INPUT_IQS9151_2F_TAP_MOVE`)
+  - `TWO_FINGER_TAP_MAX_MS = 500` (`CONFIG_INPUT_IQS9151_2F_TAP_MAX_MS`)
+  - `TWO_FINGER_TAP_MOVE = 50` (`CONFIG_INPUT_IQS9151_2F_TAP_MOVE`)
   - `TWO_FINGER_CLICK_HOLD_MAX_MS = 200`
     (`CONFIG_INPUT_IQS9151_2F_TAPDRAG_GAP_MAX_MS`)
   - `TWO_FINGER_TAPDRAG_GAP_MAX_MS = 200`
@@ -56,9 +56,9 @@
   - `TWO_FINGER_RELEASE_PENDING_MAX_MS = 150` (固定)
   - `TWO_FINGER_ONE_LEAD_MAX_MS = 120` (固定)
 - 3F:
-  - `THREE_FINGER_TAP_MAX_MS = 180` (`CONFIG_INPUT_IQS9151_3F_TAP_MAX_MS`)
-  - `THREE_FINGER_TAP_MOVE = 30` (`CONFIG_INPUT_IQS9151_3F_TAP_MOVE`)
-  - `THREE_FINGER_CLICK_HOLD_MAX_MS = 230`
+  - `THREE_FINGER_TAP_MAX_MS = 400` (`CONFIG_INPUT_IQS9151_3F_TAP_MAX_MS`)
+  - `THREE_FINGER_TAP_MOVE = 35` (`CONFIG_INPUT_IQS9151_3F_TAP_MOVE`)
+  - `THREE_FINGER_CLICK_HOLD_MAX_MS = 200`
     (`CONFIG_INPUT_IQS9151_3F_TAPDRAG_GAP_MAX_MS`)
   - `THREE_FINGER_TAPDRAG_GAP_MAX_MS = 230`
     (`CONFIG_INPUT_IQS9151_3F_TAPDRAG_GAP_MAX_MS`)
@@ -293,3 +293,19 @@
 - 2026-04-09: 2F scroll inertia の停止条件に新規 1F 接触 (`0->1`) を追加
   - scroll inertia 動作中に新しい 1F タッチが始まった場合は inertia を停止する
   - 既存の `2->1->0` tail 抑止仕様とは独立で、tail の `2->1` は停止条件に含めない
+- 2026-08-17: バグ修正と長押しホールド時間の個別設定化
+  - Tap で hold press を出したフレーム／クリックを出したフレームでは
+    cursor inertia を発動しない（`hold_button` 保持中も同様）
+  - deferred-click の 2回目タッチは `hold_button` を実際に保持している場合のみ
+    TapDrag として扱う（他ジェスチャにラッチを奪われた場合は新規Tap扱い）
+  - 1F 長押しホールドは `finger_count != 1` の任意フレームで解除する
+    （`finger_count >= 4` でBTN0が固着する問題の修正）
+  - hold の release を `K_FOREVER` で送出（取りこぼし防止）
+  - 実行中の `SHOW_RESET` で IC 再設定シーケンスを再実行する
+  - §3 の既定値表を実際の `Kconfig` 既定値に同期
+  - `CONFIG_INPUT_IQS9151_{1F,2F,3F}_LONG_PRESS_HOLD_MS` を追加
+- 2026-08-17: Tap 判定時間の既定値を倍化
+  - `1F_TAP_MAX_MS` 250 -> 500, `2F_TAP_MAX_MS` 250 -> 500,
+    `3F_TAP_MAX_MS` 200 -> 400
+  - 2回目タップ（ダブルクリック相当）判定と 3F `release_pending` の
+    経過時間判定にも同じ値が使われるため、いずれも同様に緩和される
