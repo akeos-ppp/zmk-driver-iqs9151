@@ -112,7 +112,7 @@ config INPUT_IQS9151_1F_TAP_ENABLE
 config INPUT_IQS9151_1F_TAP_MAX_MS
     int "IQS9151 single-finger tap max time (ms)"
     range 1 1000
-    default 250
+    default 500
     help
       Maximum down duration for 1F tap detection (driver-side).
 
@@ -159,7 +159,36 @@ config INPUT_IQS9151_LONG_PRESS_HOLD_MS
     help
       Time the fingers must remain in contact (with cumulative motion
       below LONG_PRESS_HOLD_MOVE) before the corresponding button is
-      engaged. Applies uniformly to 1F, 2F, and 3F sessions.
+      engaged. Acts as the default for the per-gesture
+      INPUT_IQS9151_{1F,2F,3F}_LONG_PRESS_HOLD_MS options.
+
+config INPUT_IQS9151_1F_LONG_PRESS_HOLD_MS
+    int "IQS9151 1F long-press hold engagement time (ms)"
+    range 100 2000
+    default INPUT_IQS9151_LONG_PRESS_HOLD_MS
+    depends on INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE
+    help
+      Per-gesture override of INPUT_IQS9151_LONG_PRESS_HOLD_MS for
+      one-finger long-press hold (BTN_0). Leave at the default to follow
+      the common LONG_PRESS_HOLD_MS value.
+
+config INPUT_IQS9151_2F_LONG_PRESS_HOLD_MS
+    int "IQS9151 2F long-press hold engagement time (ms)"
+    range 100 2000
+    default INPUT_IQS9151_LONG_PRESS_HOLD_MS
+    depends on INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE
+    help
+      Per-gesture override of INPUT_IQS9151_LONG_PRESS_HOLD_MS for
+      two-finger long-press hold (BTN_1).
+
+config INPUT_IQS9151_3F_LONG_PRESS_HOLD_MS
+    int "IQS9151 3F long-press hold engagement time (ms)"
+    range 100 2000
+    default INPUT_IQS9151_LONG_PRESS_HOLD_MS
+    depends on INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE
+    help
+      Per-gesture override of INPUT_IQS9151_LONG_PRESS_HOLD_MS for
+      three-finger long-press hold (BTN_2).
 
 config INPUT_IQS9151_LONG_PRESS_HOLD_MOVE
     int "IQS9151 long-press hold movement tolerance"
@@ -226,7 +255,7 @@ config INPUT_IQS9151_2F_TAP_ENABLE
 config INPUT_IQS9151_2F_TAP_MAX_MS
     int "IQS9151 two-finger tap max time (ms)"
     range 1 1000
-    default 250
+    default 500
     help
       Maximum down duration for 2F tap detection (driver-side).
 
@@ -347,7 +376,7 @@ config INPUT_IQS9151_3F_TAP_ENABLE
 config INPUT_IQS9151_3F_TAP_MAX_MS
     int "IQS9151 three-finger tap max time (ms)"
     range 1 1000
-    default 200
+    default 400
     help
       Maximum down duration for 3F tap detection (driver-side).
 
