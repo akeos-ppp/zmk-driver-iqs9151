@@ -34,6 +34,15 @@ LOG_MODULE_REGISTER(iqs9151, CONFIG_INPUT_IQS9151_LOG_LEVEL);
 #define IQS9151_I2C_CHUNK_SIZE 30
 #define IQS9151_RSTD_DELAY_MS 100
 #define IQS9151_ATI_TIMEOUT_MS 1000
+/* Minimum spacing between runtime SHOW_RESET recovery attempts. */
+#define IQS9151_RESET_RECOVERY_RETRY_MS 1000
+/* Shorter ATI budget for the runtime recovery path: it runs on the same work
+ * queue as the rest of the system, so the worst-case stall must stay bounded. */
+#define IQS9151_RECOVERY_ATI_TIMEOUT_MS 500
+/* RDY wait before retrying a failed frame read, and how many consecutive
+ * frame-read failures are tolerated before an active hold is force-released. */
+#define IQS9151_FRAME_RETRY_READY_MS 5
+#define IQS9151_FRAME_READ_FAIL_LIMIT 3
 #define IQS9151_ATI_POLL_INTERVAL_MS 10
 #define INERTIA_FP_SHIFT 8
 #define EMA_FP_SHIFT INERTIA_FP_SHIFT
@@ -85,9 +94,15 @@ LOG_MODULE_REGISTER(iqs9151, CONFIG_INPUT_IQS9151_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
 #define LONG_PRESS_HOLD_MS   CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_MS
 #define LONG_PRESS_HOLD_MOVE CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_MOVE
+#define ONE_FINGER_LONG_PRESS_HOLD_MS   CONFIG_INPUT_IQS9151_1F_LONG_PRESS_HOLD_MS
+#define TWO_FINGER_LONG_PRESS_HOLD_MS   CONFIG_INPUT_IQS9151_2F_LONG_PRESS_HOLD_MS
+#define THREE_FINGER_LONG_PRESS_HOLD_MS CONFIG_INPUT_IQS9151_3F_LONG_PRESS_HOLD_MS
 #else
 #define LONG_PRESS_HOLD_MS   0
 #define LONG_PRESS_HOLD_MOVE 0
+#define ONE_FINGER_LONG_PRESS_HOLD_MS   0
+#define TWO_FINGER_LONG_PRESS_HOLD_MS   0
+#define THREE_FINGER_LONG_PRESS_HOLD_MS 0
 #endif
 #define TWO_FINGER_TAP_MOVE CONFIG_INPUT_IQS9151_2F_TAP_MOVE
 #define TWO_FINGER_SCROLL_START_MOVE CONFIG_INPUT_IQS9151_2F_SCROLL_START_MOVE
@@ -267,7 +282,15 @@ struct iqs9151_data {
     int32_t three_dy;
     uint16_t three_last_x;
     uint16_t three_last_y;
+    /* Timestamp of the last runtime SHOW_RESET recovery attempt. */
+    int64_t reset_recovery_ms;
+    uint8_t frame_read_failures;
     uint16_t hold_button;
+    /* Set whenever a hold button press/release/drag-lock transition happened
+     * during the current frame. Used to gate cursor inertia: any frame that
+     * changes the hold latch must never seed/start inertia. Cleared at the
+     * top of every frame in iqs9151_process_frame(). */
+    bool hold_changed;
     struct iqs9151_finger_history_entry finger_history[IQS9151_FINGER_HISTORY_SIZE];
     uint8_t finger_history_head;
     uint8_t finger_history_count;
@@ -1030,8 +1053,12 @@ static void iqs9151_release_hold(struct iqs9151_data *data, const struct device 
         return;
     }
 
-    iqs9151_report_key_event(dev, data->hold_button, false, true, K_NO_WAIT);
+    /* K_FOREVER: a dropped release latches the button down on the host with
+     * no recovery path, so the release must never be discarded (presses use
+     * K_FOREVER too). This always runs from a work queue thread. */
+    iqs9151_report_key_event(dev, data->hold_button, false, true, K_FOREVER);
     data->hold_button = 0U;
+    data->hold_changed = true;
 }
 
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
@@ -1044,6 +1071,7 @@ static void iqs9151_drag_lock_arm(struct iqs9151_data *data,
     data->drag_lock_button = data->hold_button;
     data->drag_lock_started_ms = k_uptime_get();
     data->hold_button = 0U;
+    data->hold_changed = true;
     LOG_DBG("drag_lock: armed btn=0x%04x", data->drag_lock_button);
     IQS9151_HAPTIC(dev, IQS9151_HAPTIC_DRAG_LOCK_ARM);
 }
@@ -1053,9 +1081,10 @@ static void iqs9151_drag_lock_release(struct iqs9151_data *data,
     if (data->drag_lock_button == 0U) {
         return;
     }
-    iqs9151_report_key_event(dev, data->drag_lock_button, false, true, K_NO_WAIT);
+    iqs9151_report_key_event(dev, data->drag_lock_button, false, true, K_FOREVER);
     LOG_DBG("drag_lock: released btn=0x%04x", data->drag_lock_button);
     data->drag_lock_button = 0U;
+    data->hold_changed = true;
     data->drag_lock_started_ms = 0;
     IQS9151_HAPTIC(dev, IQS9151_HAPTIC_DRAG_LOCK_RELEASE);
 }
@@ -1172,6 +1201,8 @@ static bool iqs9151_emit_click(struct iqs9151_data *data,
 
     iqs9151_report_key_event(dev, button, true, true, K_FOREVER);
     iqs9151_report_key_event(dev, button, false, true, K_FOREVER);
+    /* A frame that emitted a click must not also fling the cursor. */
+    data->hold_changed = true;
     IQS9151_HAPTIC(dev, IQS9151_HAPTIC_TAP);
     return true;
 }
@@ -1190,6 +1221,7 @@ static bool iqs9151_emit_hold_press(struct iqs9151_data *data,
 
     iqs9151_report_key_event(dev, button, true, true, K_FOREVER);
     data->hold_button = button;
+    data->hold_changed = true;
     iqs9151_haptic_drag_buzz_start(data);
     return true;
 }
@@ -1298,8 +1330,12 @@ static bool iqs9151_one_finger_update(struct iqs9151_data *data,
             const int64_t armed_elapsed_ms =
                 now_ms - data->one_finger_click_pending_ms;
 
+            /* The deferred-click latch may have been stolen by another
+             * gesture via iqs9151_try_tap_hold_emit(). Without this check the
+             * session would enter drag mode with no button actually held. */
             tapdrag_second_touch = (armed_elapsed_ms >= 0) &&
-                                   (armed_elapsed_ms <= ONE_FINGER_CLICK_HOLD_MAX_MS);
+                                   (armed_elapsed_ms <= ONE_FINGER_CLICK_HOLD_MAX_MS) &&
+                                   (data->hold_button == INPUT_BTN_0);
             if (!tapdrag_second_touch && data->hold_button == INPUT_BTN_0) {
                 iqs9151_release_hold(data, dev);
             }
@@ -1350,7 +1386,7 @@ static bool iqs9151_one_finger_update(struct iqs9151_data *data,
         }
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
         if (!state->hold_sent && !state->tapdrag_second_touch &&
-            elapsed_ms >= LONG_PRESS_HOLD_MS &&
+            elapsed_ms >= ONE_FINGER_LONG_PRESS_HOLD_MS &&
             iqs9151_abs32(state->dx) <= LONG_PRESS_HOLD_MOVE &&
             iqs9151_abs32(state->dy) <= LONG_PRESS_HOLD_MOVE
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
@@ -1397,10 +1433,19 @@ static bool iqs9151_one_finger_update(struct iqs9151_data *data,
     }
 
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
-    if (frame->finger_count == 0U && state->hold_sent &&
-        !state->tapdrag_second_touch) {
+    /* Any non-1F frame ends the long-press hold (matches the 2F/3F paths).
+     * Requiring finger_count == 0 here left BTN_0 stuck when the IC reported
+     * finger_count >= 4 (palm/hand drop) during an engaged hold. */
+    if (state->hold_sent && !state->tapdrag_second_touch) {
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
-        iqs9151_drag_lock_arm(data, dev);
+        /* Only a clean lift arms the drag lock. A finger_count >= 2 frame
+         * (palm/hand drop, extra finger) must release outright, otherwise
+         * BTN_0 stays latched on the host with nothing to release it. */
+        if (frame->finger_count == 0U) {
+            iqs9151_drag_lock_arm(data, dev);
+        } else {
+            iqs9151_release_hold(data, dev);
+        }
 #else
         iqs9151_release_hold(data, dev);
 #endif
@@ -1497,8 +1542,12 @@ static void iqs9151_two_finger_update(struct iqs9151_data *data,
             const int64_t armed_elapsed_ms =
                 now_ms - data->two_finger_click_pending_ms;
 
+            /* The deferred-click latch may have been stolen by another
+             * gesture via iqs9151_try_tap_hold_emit(). Without this check the
+             * session would enter drag mode with no button actually held. */
             tapdrag_second_touch = (armed_elapsed_ms >= 0) &&
-                                   (armed_elapsed_ms <= TWO_FINGER_CLICK_HOLD_MAX_MS);
+                                   (armed_elapsed_ms <= TWO_FINGER_CLICK_HOLD_MAX_MS) &&
+                                   (data->hold_button == INPUT_BTN_1);
             if (!tapdrag_second_touch && data->hold_button == INPUT_BTN_1) {
                 iqs9151_release_hold(data, dev);
             }
@@ -1590,7 +1639,7 @@ static void iqs9151_two_finger_update(struct iqs9151_data *data,
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
         if (!state->hold_sent && !state->tapdrag_second_touch &&
             state->mode == IQS9151_2F_MODE_NONE &&
-            elapsed_ms >= LONG_PRESS_HOLD_MS &&
+            elapsed_ms >= TWO_FINGER_LONG_PRESS_HOLD_MS &&
             iqs9151_abs32(state->centroid_dx) <= LONG_PRESS_HOLD_MOVE &&
             iqs9151_abs32(state->centroid_dy) <= LONG_PRESS_HOLD_MOVE &&
             iqs9151_abs32(state->distance_delta) <= LONG_PRESS_HOLD_MOVE
@@ -1827,8 +1876,12 @@ static bool iqs9151_three_finger_update(struct iqs9151_data *data,
             const int64_t armed_elapsed_ms =
                 now_ms - data->three_finger_click_pending_ms;
 
+            /* The deferred-click latch may have been stolen by another
+             * gesture via iqs9151_try_tap_hold_emit(). Without this check the
+             * session would enter drag mode with no button actually held. */
             tapdrag_second_touch = (armed_elapsed_ms >= 0) &&
-                                   (armed_elapsed_ms <= THREE_FINGER_CLICK_HOLD_MAX_MS);
+                                   (armed_elapsed_ms <= THREE_FINGER_CLICK_HOLD_MAX_MS) &&
+                                   (data->hold_button == INPUT_BTN_2);
             if (!tapdrag_second_touch && data->hold_button == INPUT_BTN_2) {
                 iqs9151_release_hold(data, dev);
             }
@@ -1919,7 +1972,7 @@ static bool iqs9151_three_finger_update(struct iqs9151_data *data,
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
         if (!data->three_hold_sent && !data->three_tapdrag_second_touch &&
             !data->three_swipe_sent &&
-            elapsed >= LONG_PRESS_HOLD_MS &&
+            elapsed >= THREE_FINGER_LONG_PRESS_HOLD_MS &&
             iqs9151_abs32(data->three_dx) <= LONG_PRESS_HOLD_MOVE &&
             iqs9151_abs32(data->three_dy) <= LONG_PRESS_HOLD_MOVE
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
@@ -2349,6 +2402,64 @@ static int iqs9151_read_frame(const struct iqs9151_config *cfg,
     return 0;
 }
 
+/* Defined further down; needed by the runtime SHOW_RESET recovery below. */
+static int iqs9151_ack_reset(const struct device *dev);
+static int iqs9151_configure(const struct device *dev);
+static int iqs9151_apply_kconfig_overrides(const struct device *dev);
+static int iqs9151_run_ati(const struct iqs9151_config *config);
+static int iqs9151_wait_for_ati(const struct device *dev, uint16_t timeout_ms);
+static int iqs9151_set_event_mode(const struct device *dev);
+
+/* Re-run the parts of iqs9151_init() that the IC loses across a reset.
+ * Returns 0 on success. Blocks for up to ~1.5 s in the worst case (ATI), but
+ * only ever runs on an actual IC reset, which is rare. */
+static int iqs9151_recover_after_reset(const struct device *dev) {
+    const struct iqs9151_config *cfg = dev->config;
+    int ret;
+
+    ret = iqs9151_ack_reset(dev);
+    if (ret != 0) {
+        LOG_ERR("SHOW_RESET recovery: ACK reset failed (%d)", ret);
+        return ret;
+    }
+    iqs9151_wait_for_ready(dev, 500);
+
+    ret = iqs9151_configure(dev);
+    if (ret != 0) {
+        LOG_ERR("SHOW_RESET recovery: reconfigure failed (%d)", ret);
+        return ret;
+    }
+    iqs9151_wait_for_ready(dev, 100);
+
+    ret = iqs9151_apply_kconfig_overrides(dev);
+    if (ret != 0) {
+        LOG_ERR("SHOW_RESET recovery: Kconfig overrides failed (%d)", ret);
+        return ret;
+    }
+    iqs9151_wait_for_ready(dev, 100);
+
+    ret = iqs9151_run_ati(cfg);
+    if (ret != 0) {
+        LOG_ERR("SHOW_RESET recovery: ATI request failed (%d)", ret);
+        return ret;
+    }
+    ret = iqs9151_wait_for_ati(dev, IQS9151_RECOVERY_ATI_TIMEOUT_MS);
+    if (ret != 0) {
+        LOG_ERR("SHOW_RESET recovery: ATI failed (%d)", ret);
+        return ret;
+    }
+    iqs9151_wait_for_ready(dev, 100);
+
+    ret = iqs9151_set_event_mode(dev);
+    if (ret != 0) {
+        LOG_ERR("SHOW_RESET recovery: event mode restore failed (%d)", ret);
+        return ret;
+    }
+
+    LOG_INF("SHOW_RESET recovery complete");
+    return 0;
+}
+
 static bool iqs9151_handle_show_reset(struct iqs9151_data *data,
                                       const struct iqs9151_frame *frame) {
     const struct device *dev = data->dev;
@@ -2372,6 +2483,26 @@ static bool iqs9151_handle_show_reset(struct iqs9151_data *data,
     data->fc_pending_frames = 0;
     data->fc_initialized = false;
 #endif
+
+    /* SHOW_RESET stays latched until it is acknowledged, and the IC comes back
+     * with its power-on configuration (event mode off, all tuning lost).
+     * Previously nothing re-ran the init sequence at runtime, so every frame
+     * after an IC reset short-circuited here and the trackpad stayed dead
+     * until the board rebooted. Retry is rate limited so a persistently
+     * failing bus cannot hog the system work queue. */
+    if (dev != NULL) {
+        const int64_t now_ms = k_uptime_get();
+
+        /* Stamped on EVERY attempt (success or failure) so an IC that keeps
+         * resetting cannot make us re-run the blocking init sequence on every
+         * single frame. */
+        if (data->reset_recovery_ms == 0 ||
+            (now_ms - data->reset_recovery_ms) >= IQS9151_RESET_RECOVERY_RETRY_MS) {
+            data->reset_recovery_ms = now_ms;
+            (void)iqs9151_recover_after_reset(dev);
+            data->reset_recovery_ms = k_uptime_get();
+        }
+    }
     return true;
 }
 
@@ -2493,13 +2624,15 @@ static bool iqs9151_update_gesture_sessions(struct iqs9151_data *data,
         if (frame->finger_count == 2U && IQS9151_FSR_DRAG_ACTIVE(dev)) {
             /* suppressed */
         } else {
-            released_from_hold = iqs9151_one_finger_update(data, frame, prev_frame, dev);
+            released_from_hold |= iqs9151_one_finger_update(data, frame, prev_frame, dev);
         }
     }
     if (frame->finger_count != 2U && data->two_finger.active) {
         iqs9151_two_finger_update(data, frame, prev_frame, dev, two_result);
     }
     if (frame->finger_count != 3U && data->three_active) {
+        /* The return value means "3F session handled", not "hold released";
+         * hold releases are reported through data->hold_changed instead. */
         (void)iqs9151_three_finger_update(data, frame, prev_frame, dev);
     }
 
@@ -2507,7 +2640,7 @@ static bool iqs9151_update_gesture_sessions(struct iqs9151_data *data,
     case 1U:
         if (!(data->two_finger.active && data->two_finger.release_pending)) {
             if (!(data->three_active && data->three_release_pending)) {
-                released_from_hold = iqs9151_one_finger_update(data, frame, prev_frame, dev);
+                released_from_hold |= iqs9151_one_finger_update(data, frame, prev_frame, dev);
             }
         }
         break;
@@ -2574,8 +2707,20 @@ static void iqs9151_update_inertia_ema(struct iqs9151_data *data,
         }
     }
 
-    /* Inertial Cursolling */
-    if (cursor_released && !released_from_hold && !suppress_cursor_tail) {
+    /* Inertial Cursolling
+     * data->hold_changed covers the cases released_from_hold cannot:
+     *  - the 1F tap frame that PRESSES BTN_0 (deferred click) — previously a
+     *    fast short flick started inertia with the button held down, turning
+     *    a click into a drag;
+     *  - 2F/3F TapDrag hold releases, which never reached released_from_hold
+     *    because iqs9151_two_finger_update() returns void and the 3F return
+     *    value was discarded. */
+    if (cursor_released && !released_from_hold && !data->hold_changed &&
+        data->hold_button == 0U &&
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
+        data->drag_lock_button == 0U &&
+#endif
+        !suppress_cursor_tail) {
         if (IS_ENABLED(CONFIG_INPUT_IQS9151_CURSOR_INERTIA_ENABLE) &&
             iqs9151_inertia_seed_from_history(&data->cursor_motion_history,
                                               &iqs9151_cursor_params,
@@ -2661,6 +2806,7 @@ static void iqs9151_process_frame(struct iqs9151_data *data,
     bool suppress_cursor_tail;
 
     iqs9151_two_finger_result_reset(&two_result);
+    data->hold_changed = false;
 
     released_from_hold =
         iqs9151_update_gesture_sessions(data, frame, &prev_frame, &two_result);
@@ -2710,9 +2856,32 @@ static void iqs9151_work_cb(struct k_work *work) {
 
     ret = iqs9151_read_frame(cfg, &frame);
     if (ret != 0) {
+        /* Retry once: a single NACK is common on a busy bus. Wait for RDY
+         * first, like every other I2C path in this driver. */
+        iqs9151_wait_for_ready(dev, IQS9151_FRAME_RETRY_READY_MS);
+        ret = iqs9151_read_frame(cfg, &frame);
+    }
+    if (ret != 0) {
         LOG_ERR("frame read failed (%d)", ret);
+        /* In event mode no further interrupt arrives once the finger is off
+         * the pad, so dropping the 1->0 frame while a button is held would
+         * leave it pressed until the next touch. After several consecutive
+         * failures, fail safe: release the hold and reset the sessions.
+         * The drag lock is deliberately preserved -- it is designed to
+         * survive finger-off and a transient bus glitch must not cancel it. */
+        if (data->frame_read_failures < 0xFFU) {
+            data->frame_read_failures++;
+        }
+        if (data->frame_read_failures >= IQS9151_FRAME_READ_FAIL_LIMIT &&
+            data->hold_button != 0U) {
+            LOG_WRN("frame read failed %u times while holding: releasing",
+                    data->frame_read_failures);
+            iqs9151_reset_gesture_states(data, dev, false);
+            iqs9151_release_hold(data, dev);
+        }
         return;
     }
+    data->frame_read_failures = 0U;
 
     iqs9151_process_frame(data, &frame, now_ms);
 }
@@ -2732,10 +2901,18 @@ static int iqs9151_set_interrupt(const struct device *dev, const bool en) {
 }
 
 static int iqs9151_run_ati(const struct iqs9151_config *config) {
-    uint8_t ctrl[2] = {
-        SYSTEM_CONTROL_0,
-        SYSTEM_CONTROL_1 | IQS9151_SYS_CTRL_ALP_RE_ATI | IQS9151_SYS_CTRL_TP_RE_ATI,
-    };
+    uint8_t ctrl[2];
+
+    /* System Control (0x11BC) is a 16-bit little-endian register. ALP/TP
+     * Re-ATI are BIT(6)/BIT(5) of the 16-bit value, i.e. they live in the LOW
+     * byte (ctrl[0]). OR-ing them into ctrl[1] set reserved bits 14/13, so
+     * Re-ATI never ran -- and iqs9151_wait_for_ati(), which polls the correct
+     * bits, returned success on its first read and logged "ATI complete". */
+    sys_put_le16((uint16_t)((uint16_t)SYSTEM_CONTROL_0 |
+                            ((uint16_t)SYSTEM_CONTROL_1 << 8) |
+                            IQS9151_SYS_CTRL_ALP_RE_ATI |
+                            IQS9151_SYS_CTRL_TP_RE_ATI),
+                 ctrl);
     return iqs9151_i2c_write(config, IQS9151_ADDR_SYSTEM_CONTROL, ctrl, sizeof(ctrl));
 }
 
@@ -3061,12 +3238,17 @@ static int iqs9151_init(const struct device *dev) {
     }
     LOG_DBG("ATI requested");
 
+    /* Re-ATI genuinely runs now that iqs9151_run_ati() writes the correct
+     * byte, so this poll can actually time out. Treat it as a warning rather
+     * than a fatal init error: the panel still works with the previous
+     * calibration, and failing here would leave the device unbound. */
     ret = iqs9151_wait_for_ati(dev, IQS9151_ATI_TIMEOUT_MS);
     if (ret != 0) {
-        LOG_ERR("ATI failed (%d)", ret);
-        return ret;
+        LOG_WRN("ATI did not complete in %d ms (%d); continuing",
+                IQS9151_ATI_TIMEOUT_MS, ret);
+    } else {
+        LOG_DBG("ATI complete");
     }
-    LOG_DBG("ATI complete");
 
     // Setup IRQ Call Back
     k_work_init(&data->work, iqs9151_work_cb);
@@ -3119,7 +3301,11 @@ static int iqs9151_init(const struct device *dev) {
     LOG_DBG("Set Event Mode complete complete");
 
     // start IRQ
-    iqs9151_set_interrupt(dev, true);
+    ret = iqs9151_set_interrupt(dev, true);
+    if (ret < 0) {
+        LOG_ERR("Enabling RDY interrupt failed (%d)", ret);
+        return ret;
+    }
     LOG_DBG("Initialization complete");
     return 0;
 }
