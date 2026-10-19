@@ -29,6 +29,19 @@
 
 LOG_MODULE_REGISTER(iqs9151, CONFIG_INPUT_IQS9151_LOG_LEVEL);
 
+/*
+ * Drag layer (CONFIG_INPUT_IQS9151_DRAG_LAYER >= 0): the keymap layer is held
+ * while a one-finger BTN_0 drag is active (long-press hold, TapDrag second
+ * touch, or drag lock). Only the split central (or a non-split build) owns
+ * the keymap, so a peripheral build compiles this out.
+ */
+#define IQS9151_DRAG_LAYER_ENABLED                                                     \
+    ((CONFIG_INPUT_IQS9151_DRAG_LAYER >= 0) &&                                         \
+     (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)))
+#if IQS9151_DRAG_LAYER_ENABLED
+#include <zmk/keymap.h>
+#endif
+
 #define DT_DRV_COMPAT azoteq_iqs9151
 
 #define IQS9151_I2C_CHUNK_SIZE 30
@@ -91,6 +104,7 @@ LOG_MODULE_REGISTER(iqs9151, CONFIG_INPUT_IQS9151_LOG_LEVEL);
 #endif
 #define TWO_FINGER_TAP_MOVE CONFIG_INPUT_IQS9151_2F_TAP_MOVE
 #define TWO_FINGER_SCROLL_START_MOVE CONFIG_INPUT_IQS9151_2F_SCROLL_START_MOVE
+#define TWO_FINGER_SWIPE_THRESHOLD CONFIG_INPUT_IQS9151_2F_SWIPE_THRESHOLD
 #define TWO_FINGER_PINCH_START_DISTANCE CONFIG_INPUT_IQS9151_2F_PINCH_START_DISTANCE
 #define TWO_FINGER_PINCH_WHEEL_DIV 12
 #define TWO_FINGER_PINCH_WHEEL_GAIN_X10 CONFIG_INPUT_IQS9151_2F_PINCH_WHEEL_GAIN_X10
@@ -134,6 +148,7 @@ enum iqs9151_two_finger_mode {
     IQS9151_2F_MODE_NONE = 0,
     IQS9151_2F_MODE_SCROLL,
     IQS9151_2F_MODE_PINCH,
+    IQS9151_2F_MODE_SWIPE,
 };
 struct iqs9151_one_finger_state {
     bool active;
@@ -172,6 +187,7 @@ struct iqs9151_two_finger_result {
     bool pinch_active;
     bool pinch_started;
     bool pinch_ended;
+    bool swipe_ended;
     int16_t scroll_x;
     int16_t scroll_y;
     int16_t pinch_wheel;
@@ -278,6 +294,9 @@ struct iqs9151_data {
 #endif
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
     struct k_work_delayable haptic_drag_buzz_work;
+#endif
+#if IQS9151_DRAG_LAYER_ENABLED
+    bool drag_layer_on;
 #endif
 };
 
@@ -1588,7 +1607,8 @@ static void iqs9151_two_finger_update(struct iqs9151_data *data,
         }
 
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
-        if (!state->hold_sent && !state->tapdrag_second_touch &&
+        if (!IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_1F_ONLY) &&
+            !state->hold_sent && !state->tapdrag_second_touch &&
             state->mode == IQS9151_2F_MODE_NONE &&
             elapsed_ms >= LONG_PRESS_HOLD_MS &&
             iqs9151_abs32(state->centroid_dx) <= LONG_PRESS_HOLD_MOVE &&
@@ -1607,13 +1627,31 @@ static void iqs9151_two_finger_update(struct iqs9151_data *data,
 #endif
 
         if (state->mode == IQS9151_2F_MODE_NONE && !state->hold_sent) {
-            const int32_t abs_center =
-                MAX(iqs9151_abs32(state->centroid_dx), iqs9151_abs32(state->centroid_dy));
+            const int32_t abs_dx = iqs9151_abs32(state->centroid_dx);
+            const int32_t abs_dy = iqs9151_abs32(state->centroid_dy);
+            const int32_t abs_center = MAX(abs_dx, abs_dy);
             const int32_t abs_dist = iqs9151_abs32(state->distance_delta);
             const bool scroll_enabled = IS_ENABLED(CONFIG_INPUT_IQS9151_SCROLL_X_ENABLE) ||
                                         IS_ENABLED(CONFIG_INPUT_IQS9151_SCROLL_Y_ENABLE);
+            /* Only the axes that actually emit wheel events may start scroll
+             * mode. Without this, a horizontal drag with SCROLL_X disabled
+             * still locks the session into a silent scroll and no other 2F
+             * gesture can ever trigger. */
+            const int32_t scroll_move =
+                MAX(IS_ENABLED(CONFIG_INPUT_IQS9151_SCROLL_X_ENABLE) ? abs_dx : 0,
+                    IS_ENABLED(CONFIG_INPUT_IQS9151_SCROLL_Y_ENABLE) ? abs_dy : 0);
+            const bool swipe_detected = IS_ENABLED(CONFIG_INPUT_IQS9151_2F_SWIPE_ENABLE) &&
+                                        abs_dx >= TWO_FINGER_SWIPE_THRESHOLD &&
+                                        abs_dx > abs_dy;
 
-            if (scroll_enabled && abs_center >= TWO_FINGER_SCROLL_START_MOVE) {
+            if (swipe_detected) {
+                const uint16_t key = (state->centroid_dx < 0) ? INPUT_BTN_9 : INPUT_BTN_8;
+
+                iqs9151_report_key_event(dev, key, true, true, K_FOREVER);
+                iqs9151_report_key_event(dev, key, false, true, K_FOREVER);
+                state->mode = IQS9151_2F_MODE_SWIPE;
+                state->tap_candidate = false;
+            } else if (scroll_enabled && scroll_move >= TWO_FINGER_SCROLL_START_MOVE) {
                 state->mode = IQS9151_2F_MODE_SCROLL;
                 result->scroll_started = true;
                 state->tap_candidate = false;
@@ -1654,6 +1692,8 @@ static void iqs9151_two_finger_update(struct iqs9151_data *data,
         result->scroll_ended = true;
     } else if (state->mode == IQS9151_2F_MODE_PINCH) {
         result->pinch_ended = true;
+    } else if (state->mode == IQS9151_2F_MODE_SWIPE) {
+        result->swipe_ended = true;
     }
 
     if (state->tapdrag_second_touch) {
@@ -1917,7 +1957,8 @@ static bool iqs9151_three_finger_update(struct iqs9151_data *data,
         }
 
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
-        if (!data->three_hold_sent && !data->three_tapdrag_second_touch &&
+        if (!IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_1F_ONLY) &&
+            !data->three_hold_sent && !data->three_tapdrag_second_touch &&
             !data->three_swipe_sent &&
             elapsed >= LONG_PRESS_HOLD_MS &&
             iqs9151_abs32(data->three_dx) <= LONG_PRESS_HOLD_MOVE &&
@@ -2240,7 +2281,7 @@ static bool iqs9151_should_suppress_cursor_for_two_finger_tail(
     bool suppress = data->two_finger_tail_suppresses_cursor;
 
     if (prev_frame->finger_count == 2U && frame->finger_count == 1U &&
-        (two_result->scroll_ended || two_result->pinch_ended)) {
+        (two_result->scroll_ended || two_result->pinch_ended || two_result->swipe_ended)) {
         suppress = true;
         data->two_finger_tail_suppresses_cursor = true;
     }
@@ -2289,6 +2330,37 @@ static void iqs9151_inertia_cursor_work_cb(struct k_work *work) {
     }
 }
 
+static void iqs9151_drag_layer_sync(struct iqs9151_data *data) {
+#if IQS9151_DRAG_LAYER_ENABLED
+    /*
+     * A deferred single click (BTN_0 held while waiting for a second touch)
+     * is not a drag, nor is a second touch that may still end as a double
+     * click; it becomes a drag once that second touch moves or outlasts a tap.
+     */
+    const struct iqs9151_one_finger_state *one = &data->one_finger;
+    const bool maybe_double_click =
+        one->active && one->tapdrag_second_touch && one->hold_candidate;
+    bool on = data->hold_button == INPUT_BTN_0 && !data->one_finger_click_pending &&
+              !maybe_double_click;
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
+    on = on || data->drag_lock_button == INPUT_BTN_0;
+#endif
+    if (on == data->drag_layer_on) {
+        return;
+    }
+    data->drag_layer_on = on;
+    if (on) {
+        LOG_DBG("drag layer %d on", CONFIG_INPUT_IQS9151_DRAG_LAYER);
+        zmk_keymap_layer_activate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
+    } else {
+        LOG_DBG("drag layer %d off", CONFIG_INPUT_IQS9151_DRAG_LAYER);
+        zmk_keymap_layer_deactivate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
+    }
+#else
+    ARG_UNUSED(data);
+#endif
+}
+
 static void iqs9151_one_finger_click_work_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     struct iqs9151_data *data =
@@ -2302,6 +2374,7 @@ static void iqs9151_one_finger_click_work_cb(struct k_work *work) {
     if (data->hold_button == INPUT_BTN_0) {
         iqs9151_release_hold(data, data->dev);
     }
+    iqs9151_drag_layer_sync(data);
 }
 
 static void iqs9151_two_finger_click_work_cb(struct k_work *work) {
@@ -2450,6 +2523,8 @@ static bool iqs9151_update_gesture_sessions(struct iqs9151_data *data,
             two_result->scroll_ended = true;
         } else if (data->two_finger.mode == IQS9151_2F_MODE_PINCH) {
             two_result->pinch_ended = true;
+        } else if (data->two_finger.mode == IQS9151_2F_MODE_SWIPE) {
+            two_result->swipe_ended = true;
         }
         if (data->two_finger.hold_sent) {
             iqs9151_release_hold(data, dev);
@@ -2715,6 +2790,7 @@ static void iqs9151_work_cb(struct k_work *work) {
     }
 
     iqs9151_process_frame(data, &frame, now_ms);
+    iqs9151_drag_layer_sync(data);
 }
 
 static void iqs9151_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {

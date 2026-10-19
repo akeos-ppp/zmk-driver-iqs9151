@@ -172,6 +172,26 @@ config INPUT_IQS9151_LONG_PRESS_HOLD_MOVE
       from long-press hold; the finger(s) continue as a normal cursor
       move / scroll / pinch / swipe until lift.
 
+config INPUT_IQS9151_LONG_PRESS_HOLD_1F_ONLY
+    bool "IQS9151 long-press hold engagement for one finger only"
+    default n
+    depends on INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE
+    help
+      Restrict long-press hold engagement to 1F (BTN_0). Resting two or
+      three fingers still then never holds BTN_1 / BTN_2 (nor arms a drag
+      lock on them); 2F/3F TapDrag is unaffected.
+
+config INPUT_IQS9151_DRAG_LAYER
+    int "IQS9151 keymap layer held while a 1F drag is active (-1 = off)"
+    range -1 31
+    default -1
+    help
+      Keymap layer activated while BTN_0 is held as a drag (long-press
+      hold, TapDrag second touch, or drag lock) and deactivated when the
+      drag ends. A deferred single click is not treated as a drag. A
+      transparent layer with its own RGB LED widget color makes the LED
+      show the drag state. Only used on the split central (or non-split).
+
 config INPUT_IQS9151_CURSOR_INERTIA_ENABLE
     bool "IQS9151 cursor inertia enable"
     default y
@@ -417,6 +437,25 @@ config INPUT_IQS9151_DRAG_LOCK_RELEASE_TAP_CLICK_ENABLE
       from drag, or when the user performs subsequent grab gestures
       that should not fire stray clicks. 2F/3F drag-lock releases are
       always silent regardless of this option.
+
+config INPUT_IQS9151_2F_SWIPE_ENABLE
+    bool "IQS9151 two-finger horizontal swipe enable"
+    default n
+    help
+      Emit a one-shot BTN_8 / BTN_9 click when a two-finger contact
+      travels horizontally past INPUT_IQS9151_2F_SWIPE_THRESHOLD.
+      The horizontal axis can only serve one purpose, so this is meant
+      to be paired with INPUT_IQS9151_SCROLL_X_ENABLE=n. Vertical
+      scroll keeps priority: once scroll mode has started, the swipe
+      is suppressed until every finger lifts.
+
+config INPUT_IQS9151_2F_SWIPE_THRESHOLD
+    int "IQS9151 two-finger swipe threshold"
+    range 0 1000
+    default 200
+    help
+      Accumulated horizontal centroid travel that triggers a
+      two-finger swipe (driver-side).
 
 config INPUT_IQS9151_3F_SWIPE_THRESHOLD
     int "IQS9151 three-finger swipe threshold"
