@@ -22,9 +22,9 @@ config DRV2605_AUTO_CALIBRATION
 	bool "Run LRA auto-calibration on init"
 	default n
 	help
-	  Run DRV2605L auto-calibration sequence at startup. Adds ~250 ms
+	  Run DRV2605L auto-calibration sequence at startup. Adds up to ~700 ms
 	  boot delay but adapts drive parameters to the actual LRA's
 	  resonance. Disabled by default; effect library tuned for typical
-	  175 Hz LRA works well without calibration.
+	  175 Hz LRA should not be assumed for other actuators.
 
 endif # DRV2605
