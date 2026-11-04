@@ -28,12 +28,16 @@ int i2c_write_read_dt(const struct i2c_dt_spec *i,const void *p,size_t n,void *b
     (void)i;(void)p;(void)n;assert(size==28);sample_count++;if(bus_fail)return -EIO;
     memcpy(b,bus_frame,size);test_rdy=0;return 0;
 }
+int layer_on[32];
+int zmk_keymap_layer_activate(int l) {layer_on[l]=1;return 0;}
+int zmk_keymap_layer_deactivate(int l) {layer_on[l]=0;return 0;}
 static struct iqs9151_frame frame(int fingers,int x) {
     return (struct iqs9151_frame){.finger_count=fingers,.trackpad_flags=fingers|IQS9151_TP_FINGER1_CONFIDENCE,
         .finger1_x=x,.finger1_y=100,.finger1_strength=200,.finger1_area=10};
 }
 static void process(int fingers,int x,int64_t time) {
     struct iqs9151_frame f=frame(fingers,x);test_time=time;iqs9151_process_frame(&state,&f,time);
+    iqs9151_drag_layer_sync(&state);
 }
 static void fresh(void) {
     test_time=0;sample_count=effect_count=key_count=rel_count=bus_fail=0;test_rdy=1;
@@ -45,13 +49,17 @@ static void gesture_tests(void) {
     assert(effect_count==1 && effects[0]==2); /* single click, no double haptic */
     assert(!state.haptic_drag_buzz_work.pending);
     #if CONFIG_INPUT_IQS9151_1F_PRESSHOLD_ENABLE
-    process(1,100,120);process(1,100,130);assert(effect_count==2 && effects[1]==11); /* tap-drag */
+    process(1,100,120);process(1,100,130);assert(effect_count==1); /* maybe a double click: silent */
     for(int t=140;t<700;t+=10)process(1,t,t);
-    assert(effect_count==2);assert(!state.haptic_drag_buzz_work.pending);
+    assert(effect_count==2 && effects[1]==11 && layer_on[4]); /* drag mode entered once */
+    assert(!state.haptic_drag_buzz_work.pending);
     process(0,100,710);process(0,100,720);assert(effect_count==2); /* release/lock silent */
     fresh();process(1,100,20);process(1,100,30);
     for(int t=40;t<1000;t+=10)process(1,100,t);
-    assert(effect_count==1 && effects[0]==11); /* long-hold drag once */
+    assert(effect_count==1 && effects[0]==11 && layer_on[4]); /* long-hold drag once */
+    fresh();layer_on[4]=0;process(1,100,20);process(1,100,30);process(0,100,80);
+    process(1,100,120);process(1,100,130);process(0,100,180);process(0,100,190);
+    assert(effect_count==2 && effects[0]==2 && effects[1]==2 && !layer_on[4]); /* double click: no drag haptic */
     #else
     process(1,100,120);process(1,100,130);
     for(int t=140;t<1000;t+=10)process(1,100,t);
