@@ -18,6 +18,9 @@
 
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
 #include <zmk/drivers/haptic/drv2605.h>
+#include <zmk/drivers/haptic/touch_feedback.h>
+#include <zmk/drivers/input/iqs9151_touch_feedback.h>
+#include <zephyr/sys/atomic.h>
 #endif
 #if IS_ENABLED(CONFIG_INPUT_FSR_CLICK)
 #include <zmk/drivers/input/fsr_click.h>
@@ -141,6 +144,8 @@ struct iqs9151_frame {
     uint8_t finger_count;
     uint16_t finger1_x;
     uint16_t finger1_y;
+    uint16_t finger1_strength;
+    uint16_t finger1_area;
     uint16_t finger2_x;
     uint16_t finger2_y;
 };
@@ -294,6 +299,10 @@ struct iqs9151_data {
 #endif
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
     struct k_work_delayable haptic_drag_buzz_work;
+    struct k_work_delayable touch_sample_work;
+    struct touch_feedback touch_feedback;
+    atomic_val_t touch_generation;
+    int64_t touch_quiet_until;
 #endif
 #if IQS9151_DRAG_LAYER_ENABLED
     bool drag_layer_on;
@@ -308,6 +317,10 @@ static struct {
 #endif
 
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+static atomic_t touch_feedback_enabled;
+static atomic_t touch_feedback_generation;
+static void iqs9151_touch_sample_work_cb(struct k_work *work);
+
 enum iqs9151_haptic_event {
     IQS9151_HAPTIC_TAP,
     IQS9151_HAPTIC_LONG_PRESS,
@@ -340,6 +353,8 @@ static inline void iqs9151_haptic_fire(const struct device *dev,
     if (effect == 0) {
         return;
     }
+    struct iqs9151_data *data = dev->data;
+    data->touch_quiet_until = k_uptime_get() + 250;
     (void)drv2605_play_effect(cfg->haptic_dev, effect);
 }
 
@@ -777,6 +792,8 @@ static void iqs9151_parse_frame(const uint8_t *raw, struct iqs9151_frame *frame)
         (uint8_t)(frame->trackpad_flags & IQS9151_TP_FINGER_COUNT_MASK);
     frame->finger1_x = sys_get_le16(&raw[16]);
     frame->finger1_y = sys_get_le16(&raw[18]);
+    frame->finger1_strength = sys_get_le16(&raw[20]); /* 0x1028 */
+    frame->finger1_area = sys_get_le16(&raw[22]);     /* 0x102A */
     frame->finger2_x = sys_get_le16(&raw[24]);
     frame->finger2_y = sys_get_le16(&raw[26]);
 }
@@ -1191,7 +1208,9 @@ static bool iqs9151_emit_click(struct iqs9151_data *data,
 
     iqs9151_report_key_event(dev, button, true, true, K_FOREVER);
     iqs9151_report_key_event(dev, button, false, true, K_FOREVER);
-    IQS9151_HAPTIC(dev, IQS9151_HAPTIC_TAP);
+    if (button == INPUT_BTN_0 || button == INPUT_BTN_1) {
+        IQS9151_HAPTIC(dev, IQS9151_HAPTIC_TAP);
+    }
     return true;
 }
 
@@ -1332,6 +1351,9 @@ static bool iqs9151_one_finger_update(struct iqs9151_data *data,
              iqs9151_has_recent_finger_count(data, 0U, now_ms, IQS9151_TAP_REENTRY_WINDOW_MS));
         state->hold_candidate = tapdrag_second_touch;
         state->tapdrag_second_touch = tapdrag_second_touch;
+        if (tapdrag_second_touch) {
+            IQS9151_HAPTIC(dev, IQS9151_HAPTIC_LONG_PRESS);
+        }
         state->down_ms = now_ms;
         state->dx = 0;
         state->dy = 0;
@@ -1538,6 +1560,9 @@ static void iqs9151_two_finger_update(struct iqs9151_data *data,
              one_lead_tap_candidate);
         state->hold_candidate = tapdrag_second_touch;
         state->tapdrag_second_touch = tapdrag_second_touch;
+        if (tapdrag_second_touch) {
+            IQS9151_HAPTIC(dev, IQS9151_HAPTIC_LONG_PRESS);
+        }
         state->release_pending = false;
         state->down_ms = now_ms;
         state->release_pending_ms = 0;
@@ -1970,7 +1995,7 @@ static bool iqs9151_three_finger_update(struct iqs9151_data *data,
             if (iqs9151_emit_hold_press(data, dev, INPUT_BTN_2)) {
                 data->three_hold_sent = true;
                 data->three_tap_candidate = false;
-                IQS9151_HAPTIC(dev, IQS9151_HAPTIC_LONG_PRESS);
+                /* No three-finger haptic. */
             }
         }
 #endif
@@ -2065,7 +2090,7 @@ static bool iqs9151_three_finger_update(struct iqs9151_data *data,
             if (IS_ENABLED(CONFIG_INPUT_IQS9151_3F_PRESSHOLD_ENABLE)) {
                 tap_emitted = iqs9151_emit_hold_press(data, dev, INPUT_BTN_2);
                 if (tap_emitted) {
-                    IQS9151_HAPTIC(dev, IQS9151_HAPTIC_TAP);
+                    /* Three-finger action is not a mouse click on Nickey. */
                 }
             } else if (IS_ENABLED(CONFIG_INPUT_IQS9151_3F_TAP_ENABLE)) {
                 tap_emitted = iqs9151_emit_click(data, dev, INPUT_BTN_2);
@@ -2112,7 +2137,7 @@ static bool iqs9151_three_finger_update(struct iqs9151_data *data,
         if (IS_ENABLED(CONFIG_INPUT_IQS9151_3F_PRESSHOLD_ENABLE)) {
             tap_emitted = iqs9151_emit_hold_press(data, dev, INPUT_BTN_2);
             if (tap_emitted) {
-                IQS9151_HAPTIC(dev, IQS9151_HAPTIC_TAP);
+                /* Three-finger action is not a mouse click on Nickey. */
             }
         } else if (IS_ENABLED(CONFIG_INPUT_IQS9151_3F_TAP_ENABLE)) {
             tap_emitted = iqs9151_emit_click(data, dev, INPUT_BTN_2);
@@ -2722,8 +2747,32 @@ static void iqs9151_process_frame(struct iqs9151_data *data,
     struct iqs9151_frame local_frame = *frame;
 
     if (iqs9151_handle_show_reset(data, &local_frame)) {
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+        touch_feedback_reset(&data->touch_feedback);
+        k_work_cancel_delayable(&data->touch_sample_work);
+#endif
         return;
     }
+
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+    if (data->touch_generation != atomic_get(&touch_feedback_generation)) {
+        data->touch_generation = atomic_get(&touch_feedback_generation);
+        touch_feedback_reset(&data->touch_feedback);
+    }
+    bool gesture_busy = data->hold_button != 0U || now_ms < data->touch_quiet_until;
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
+    gesture_busy |= data->drag_lock_button != 0U;
+#endif
+    int touch_effect = touch_feedback_update(&data->touch_feedback,
+        atomic_get(&touch_feedback_enabled),
+        frame->finger_count == 1U && iqs9151_finger1_valid(frame),
+        frame->finger1_strength, frame->finger1_area, gesture_busy, now_ms);
+    if (touch_effect && ((const struct iqs9151_config *)dev->config)->haptic_dev) {
+        /* Short, low-amplitude ticks; a held contact never creates a buzz. */
+        (void)drv2605_play_effect(((const struct iqs9151_config *)dev->config)->haptic_dev,
+                                 touch_effect == 1 ? 3 : 6);
+    }
+#endif
 
     iqs9151_debounce_finger_count(data, &local_frame);
 
@@ -2775,23 +2824,65 @@ static void iqs9151_process_frame(struct iqs9151_data *data,
     iqs9151_push_finger_history(data, frame->finger_count, now_ms);
 }
 
-static void iqs9151_work_cb(struct k_work *work) {
-    struct iqs9151_data *data = CONTAINER_OF(work, struct iqs9151_data, work);
+/* Both paths run on the system work queue. A forced feedback read processes the
+ * complete frame, so it cannot consume relative motion without reporting it. */
+static void iqs9151_sample(struct iqs9151_data *data, bool force) {
     const struct device *dev = data->dev;
     const struct iqs9151_config *cfg = dev->config;
     struct iqs9151_frame frame;
-    int ret;
-    const int64_t now_ms = k_uptime_get();
-
-    ret = iqs9151_read_frame(cfg, &frame);
+    if (!force && gpio_pin_get_dt(&cfg->irq_gpio) <= 0) {
+        return; /* a feedback sample already consumed this RDY window */
+    }
+    int ret = iqs9151_read_frame(cfg, &frame);
     if (ret != 0) {
-        LOG_ERR("frame read failed (%d)", ret);
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+        touch_feedback_reset(&data->touch_feedback);
+        k_work_cancel_delayable(&data->touch_sample_work);
+#endif
+        LOG_WRN("frame read failed (%d)", ret);
+        return; /* no polling/retry loop after a bus failure */
+    }
+    iqs9151_process_frame(data, &frame, k_uptime_get());
+    iqs9151_drag_layer_sync(data);
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+    if (atomic_get(&touch_feedback_enabled) && cfg->haptic_dev &&
+        device_is_ready(cfg->haptic_dev) && frame.finger_count == 1U &&
+        !(frame.info_flags & IQS9151_INFO_SHOW_RESET)) {
+        k_work_reschedule(&data->touch_sample_work, K_MSEC(50));
+    } else {
+        k_work_cancel_delayable(&data->touch_sample_work);
+    }
+#endif
+}
+
+static void iqs9151_work_cb(struct k_work *work) {
+    struct iqs9151_data *data = CONTAINER_OF(work, struct iqs9151_data, work);
+    iqs9151_sample(data, false);
+}
+
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+static void iqs9151_touch_sample_work_cb(struct k_work *work) {
+    struct iqs9151_data *data = CONTAINER_OF(k_work_delayable_from_work(work),
+                                           struct iqs9151_data, touch_sample_work);
+    const struct iqs9151_config *cfg = data->dev->config;
+    if (!atomic_get(&touch_feedback_enabled) || !cfg->haptic_dev ||
+        !device_is_ready(cfg->haptic_dev)) {
+        touch_feedback_reset(&data->touch_feedback);
         return;
     }
-
-    iqs9151_process_frame(data, &frame, now_ms);
-    iqs9151_drag_layer_sync(data);
+    /* Force Comms Method 0 (existing config): the device stretches SCL until
+     * the next sample. Keep event mode and all original sensor sleep periods.
+     * One sample on enable; after that only while one finger remains down. */
+    iqs9151_sample(data, true);
 }
+
+static void iqs9151_touch_request(const struct device *dev) {
+    if (device_is_ready(dev)) {
+        struct iqs9151_data *data = dev->data;
+        k_work_reschedule(&data->touch_sample_work, K_NO_WAIT);
+    }
+}
+#endif
 
 static void iqs9151_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
     struct iqs9151_data *data = CONTAINER_OF(cb, struct iqs9151_data, gpio_cb);
@@ -3153,6 +3244,7 @@ static int iqs9151_init(const struct device *dev) {
     k_work_init_delayable(&data->inertia_cursor_work, iqs9151_inertia_cursor_work_cb);
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
     k_work_init_delayable(&data->haptic_drag_buzz_work, iqs9151_haptic_drag_buzz_work_cb);
+    k_work_init_delayable(&data->touch_sample_work, iqs9151_touch_sample_work_cb);
 #endif
     iqs9151_inertia_state_reset(&data->inertia_scroll);
     iqs9151_inertia_state_reset(&data->inertia_cursor);
@@ -3218,6 +3310,7 @@ void iqs9151_test_context_init(void *ctx, const struct device *dev) {
     k_work_init_delayable(&data->inertia_cursor_work, iqs9151_inertia_cursor_work_cb);
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
     k_work_init_delayable(&data->haptic_drag_buzz_work, iqs9151_haptic_drag_buzz_work_cb);
+    k_work_init_delayable(&data->touch_sample_work, iqs9151_touch_sample_work_cb);
 #endif
     iqs9151_inertia_state_reset(&data->inertia_scroll);
     iqs9151_inertia_state_reset(&data->inertia_cursor);
@@ -3253,6 +3346,7 @@ void iqs9151_test_cancel_pending_work(void *ctx) {
     (void)k_work_cancel_delayable(&data->inertia_cursor_work);
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
     (void)k_work_cancel_delayable(&data->haptic_drag_buzz_work);
+    (void)k_work_cancel_delayable(&data->touch_sample_work);
 #endif
     (void)k_work_cancel(&data->work);
 }
@@ -3342,3 +3436,12 @@ void iqs9151_test_force_pinch_session(void *ctx, bool active) {
                         CONFIG_INPUT_IQS9151_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(IQS9151_INIT);
+
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+#define IQS_TOUCH_REQUEST(inst) iqs9151_touch_request(DEVICE_DT_INST_GET(inst));
+void iqs9151_touch_feedback_set(bool enabled) {
+    atomic_set(&touch_feedback_enabled, enabled);
+    atomic_inc(&touch_feedback_generation);
+    DT_INST_FOREACH_STATUS_OKAY(IQS_TOUCH_REQUEST)
+}
+#endif
