@@ -317,7 +317,11 @@ static struct {
 #endif
 
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE)
+#if IS_ENABLED(CONFIG_INPUT_IQS9151_TOUCH_FEEDBACK_DEFAULT_ON)
+static atomic_t touch_feedback_enabled = 1;
+#else
 static atomic_t touch_feedback_enabled;
+#endif
 static atomic_t touch_feedback_generation;
 static void iqs9151_touch_sample_work_cb(struct k_work *work);
 

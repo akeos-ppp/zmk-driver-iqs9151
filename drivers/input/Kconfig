@@ -546,6 +546,13 @@ config INPUT_IQS9151_HAPTIC_DRAG_BUZZ_INTERVAL_MS
     help
       How often (in ms) to repeat the drag buzz effect while holding.
 
+config INPUT_IQS9151_TOUCH_FEEDBACK_DEFAULT_ON
+    bool "Touch strength/area feedback enabled at boot"
+    default n
+    help
+      Start with touch (strength/area) feedback ON after every boot.
+      &touch_feedback 0/1 still switches it at runtime; nothing is saved.
+
 endif # INPUT_IQS9151_HAPTIC_FEEDBACK_ENABLE
 
 config INPUT_IQS9151_TEST
