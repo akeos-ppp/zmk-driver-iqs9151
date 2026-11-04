@@ -1,0 +1,3 @@
+description: Enable or disable local IQS9151 touch feedback on both connected halves
+compatible: "zmk,behavior-touch-feedback"
+include: one_param.yaml
