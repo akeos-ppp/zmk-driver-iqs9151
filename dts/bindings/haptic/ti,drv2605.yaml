@@ -5,6 +5,11 @@ compatible: "ti,drv2605"
 include: i2c-device.yaml
 
 properties:
+  resonance-hz:
+    type: int
+    default: 175
+    description: LRA nominal resonance in Hz (125 to 300); sets drive time and rated voltage.
+
   actuator-type:
     type: string
     default: "lra"
@@ -28,7 +33,7 @@ properties:
     type: int
     default: 2400
     description: |
-      Overdrive (clamp) voltage in millivolts. Determines maximum drive
+      Peak overdrive (clamp) voltage in millivolts, not RMS. Determines maximum drive
       voltage during effect playback. Should be at most the actuator's
       absolute maximum rating. Default 2400 mV.
 
@@ -36,5 +41,5 @@ properties:
     type: int
     default: 6
     description: |
-      Built-in effect library to select (register 0x21). For LRAs use 6.
+      Built-in effect library to select (register 0x03). For LRAs use 6.
       For ERMs valid values are 1-5 selecting library A-E.
