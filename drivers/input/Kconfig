@@ -531,6 +531,16 @@ config INPUT_IQS9151_HAPTIC_DRAG_LOCK_RELEASE_EFFECT
       Effect ID to play when drag-lock releases. 0 disables.
       Default 7 (Soft Bump 100%).
 
+config INPUT_IQS9151_HAPTIC_DRAG_MODE_EFFECT
+    int "Effect ID when drag mode (drag layer) is entered"
+    range 0 123
+    default 0
+    help
+      Played once when the drag layer (INPUT_IQS9151_DRAG_LAYER) turns on,
+      i.e. a 1F drag is confirmed by long-press hold or TapDrag. A
+      deferred single click or a possible double click does not trigger
+      it. 0 disables. Only effective on the split central.
+
 config INPUT_IQS9151_HAPTIC_DRAG_BUZZ_EFFECT
     int "Effect ID played repeatedly while a button is held (drag buzz)"
     range 0 123

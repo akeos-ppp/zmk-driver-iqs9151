@@ -330,6 +330,7 @@ enum iqs9151_haptic_event {
     IQS9151_HAPTIC_LONG_PRESS,
     IQS9151_HAPTIC_DRAG_LOCK_ARM,
     IQS9151_HAPTIC_DRAG_LOCK_RELEASE,
+    IQS9151_HAPTIC_DRAG_MODE,
 };
 
 static inline void iqs9151_haptic_fire(const struct device *dev,
@@ -352,6 +353,9 @@ static inline void iqs9151_haptic_fire(const struct device *dev,
         break;
     case IQS9151_HAPTIC_DRAG_LOCK_RELEASE:
         effect = CONFIG_INPUT_IQS9151_HAPTIC_DRAG_LOCK_RELEASE_EFFECT;
+        break;
+    case IQS9151_HAPTIC_DRAG_MODE:
+        effect = CONFIG_INPUT_IQS9151_HAPTIC_DRAG_MODE_EFFECT;
         break;
     }
     if (effect == 0) {
@@ -2381,6 +2385,9 @@ static void iqs9151_drag_layer_sync(struct iqs9151_data *data) {
     if (on) {
         LOG_DBG("drag layer %d on", CONFIG_INPUT_IQS9151_DRAG_LAYER);
         zmk_keymap_layer_activate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
+        /* Fires once when a drag is confirmed (not on a pending click or a
+         * possible double click); drag lock keeps the layer, so no repeat. */
+        IQS9151_HAPTIC(data->dev, IQS9151_HAPTIC_DRAG_MODE);
     } else {
         LOG_DBG("drag layer %d off", CONFIG_INPUT_IQS9151_DRAG_LAYER);
         zmk_keymap_layer_deactivate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
