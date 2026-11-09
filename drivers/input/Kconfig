@@ -541,6 +541,17 @@ config INPUT_IQS9151_HAPTIC_DRAG_MODE_EFFECT
       deferred single click or a possible double click does not trigger
       it. 0 disables. Only effective on the split central.
 
+config INPUT_IQS9151_HAPTIC_DRAG_MODE_MOVE
+    int "Finger movement needed before the drag-mode haptic plays"
+    range 0 3000
+    default 0
+    help
+      0: the drag-mode effect plays as soon as the drag layer turns on.
+      >0: it plays only after the finger, while the drag layer is on, has
+      moved more than this many trackpad counts on X or Y from where the
+      touch started. A long press (or a slow second touch) released without
+      moving stays silent. Measured per touch, so drag lock re-anchors.
+
 config INPUT_IQS9151_HAPTIC_DRAG_BUZZ_EFFECT
     int "Effect ID played repeatedly while a button is held (drag buzz)"
     range 0 123
