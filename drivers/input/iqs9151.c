@@ -306,6 +306,11 @@ struct iqs9151_data {
 #endif
 #if IQS9151_DRAG_LAYER_ENABLED
     bool drag_layer_on;
+    /* Drag-mode haptic waits for real movement (HAPTIC_DRAG_MODE_MOVE). */
+    bool drag_haptic_pending;
+    bool drag_haptic_anchor_valid;
+    uint16_t drag_haptic_anchor_x;
+    uint16_t drag_haptic_anchor_y;
 #endif
 };
 
@@ -2378,19 +2383,51 @@ static void iqs9151_drag_layer_sync(struct iqs9151_data *data) {
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_DRAG_LOCK_ENABLE)
     on = on || data->drag_lock_button == INPUT_BTN_0;
 #endif
-    if (on == data->drag_layer_on) {
+    if (on != data->drag_layer_on) {
+        data->drag_layer_on = on;
+        if (on) {
+            LOG_DBG("drag layer %d on", CONFIG_INPUT_IQS9151_DRAG_LAYER);
+            zmk_keymap_layer_activate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
+            /* Fires once per drag (not on a pending click or a possible double
+             * click); drag lock keeps the layer, so no repeat. With
+             * HAPTIC_DRAG_MODE_MOVE > 0 it waits until the held finger has
+             * actually moved, so a long, still press never vibrates. */
+            if (CONFIG_INPUT_IQS9151_HAPTIC_DRAG_MODE_MOVE == 0) {
+                IQS9151_HAPTIC(data->dev, IQS9151_HAPTIC_DRAG_MODE);
+            } else {
+                data->drag_haptic_pending = true;
+                data->drag_haptic_anchor_valid = false;
+            }
+        } else {
+            LOG_DBG("drag layer %d off", CONFIG_INPUT_IQS9151_DRAG_LAYER);
+            zmk_keymap_layer_deactivate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
+            data->drag_haptic_pending = false;
+        }
+    }
+
+    if (!data->drag_haptic_pending) {
         return;
     }
-    data->drag_layer_on = on;
-    if (on) {
-        LOG_DBG("drag layer %d on", CONFIG_INPUT_IQS9151_DRAG_LAYER);
-        zmk_keymap_layer_activate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
-        /* Fires once when a drag is confirmed (not on a pending click or a
-         * possible double click); drag lock keeps the layer, so no repeat. */
+    /* data->prev_frame is the frame just processed. Distance is measured from
+     * where this touch began during the drag, so lifting and touching again in
+     * drag lock re-anchors instead of jumping. */
+    const struct iqs9151_frame *f = &data->prev_frame;
+    if (f->finger_count != 1U || !iqs9151_finger1_valid(f)) {
+        data->drag_haptic_anchor_valid = false;
+        return;
+    }
+    if (!data->drag_haptic_anchor_valid) {
+        data->drag_haptic_anchor_x = f->finger1_x;
+        data->drag_haptic_anchor_y = f->finger1_y;
+        data->drag_haptic_anchor_valid = true;
+        return;
+    }
+    const int32_t mdx = (int32_t)f->finger1_x - (int32_t)data->drag_haptic_anchor_x;
+    const int32_t mdy = (int32_t)f->finger1_y - (int32_t)data->drag_haptic_anchor_y;
+    if (iqs9151_abs32(mdx) > CONFIG_INPUT_IQS9151_HAPTIC_DRAG_MODE_MOVE ||
+        iqs9151_abs32(mdy) > CONFIG_INPUT_IQS9151_HAPTIC_DRAG_MODE_MOVE) {
+        data->drag_haptic_pending = false;
         IQS9151_HAPTIC(data->dev, IQS9151_HAPTIC_DRAG_MODE);
-    } else {
-        LOG_DBG("drag layer %d off", CONFIG_INPUT_IQS9151_DRAG_LAYER);
-        zmk_keymap_layer_deactivate(CONFIG_INPUT_IQS9151_DRAG_LAYER);
     }
 #else
     ARG_UNUSED(data);
