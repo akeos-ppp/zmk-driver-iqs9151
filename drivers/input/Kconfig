@@ -468,11 +468,14 @@ config INPUT_IQS9151_HAPTIC_TAP_EFFECT
       Recommended values: 1, 2, 3 (clicks), 7-9 (soft bumps).
 
 config INPUT_IQS9151_HAPTIC_LONG_PRESS_EFFECT
-    int "Effect ID for long-press hold engagement"
+    int "Effect ID for hold engagement (long-press / tap-drag)"
     range 0 123
     default 47
     help
-      Effect ID to play when long-press hold engages. 0 disables.
+      Effect ID to play once at the moment hold mode engages: when a
+      long-press hold latches, or when the second touch of a tap-drag
+      stops being a double-tap candidate (moved or held past the tap
+      time). 0 disables.
       Default 47 (Buzz 1 100%) gives a distinct buzz to confirm the hold
       latched. Recommended: 47-52 (buzzes), 14-16 (sharp clicks).
 
@@ -495,10 +498,13 @@ config INPUT_IQS9151_HAPTIC_DRAG_LOCK_RELEASE_EFFECT
 config INPUT_IQS9151_HAPTIC_DRAG_BUZZ_EFFECT
     int "Effect ID played repeatedly while a button is held (drag buzz)"
     range 0 123
-    default 9
+    default 0
     help
-      Effect ID to play repeatedly while the cursor moves with a button held (drag). No buzz while the finger is stationary.
-      Default 9 (Soft Bump 30%). Set to 0 to disable drag buzz entirely.
+      Effect ID to play repeatedly while the cursor moves with a button
+      held (drag). No buzz while the finger is stationary. Default 0 (off):
+      hold engagement is signalled once by
+      INPUT_IQS9151_HAPTIC_LONG_PRESS_EFFECT instead. Try 9 (Soft Bump 30%)
+      to re-enable the buzz.
 
 config INPUT_IQS9151_HAPTIC_DRAG_BUZZ_INTERVAL_MS
     int "Interval between drag buzz pulses (ms)"

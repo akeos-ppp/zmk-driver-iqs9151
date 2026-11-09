@@ -1355,6 +1355,8 @@ static bool iqs9151_one_finger_update(struct iqs9151_data *data,
              iqs9151_abs32(state->dx) > ONE_FINGER_TAP_MOVE ||
              iqs9151_abs32(state->dy) > ONE_FINGER_TAP_MOVE)) {
             state->hold_candidate = false;
+            /* Tap-drag: no longer a double tap -> hold mode engaged. */
+            IQS9151_HAPTIC(dev, IQS9151_HAPTIC_LONG_PRESS);
         }
 #if IS_ENABLED(CONFIG_INPUT_IQS9151_LONG_PRESS_HOLD_ENABLE)
         if (!state->hold_sent && !state->tapdrag_second_touch &&
@@ -1590,6 +1592,8 @@ static void iqs9151_two_finger_update(struct iqs9151_data *data,
              iqs9151_abs32(state->centroid_dy) > TWO_FINGER_TAP_MOVE ||
              iqs9151_abs32(state->distance_delta) > TWO_FINGER_TAP_MOVE)) {
             state->hold_candidate = false;
+            /* Tap-drag: no longer a double tap -> hold mode engaged. */
+            IQS9151_HAPTIC(dev, IQS9151_HAPTIC_LONG_PRESS);
         }
         if (state->tapdrag_second_touch) {
             return;
@@ -1919,6 +1923,8 @@ static bool iqs9151_three_finger_update(struct iqs9151_data *data,
              iqs9151_abs32(data->three_dx) > THREE_FINGER_TAP_MOVE ||
              iqs9151_abs32(data->three_dy) > THREE_FINGER_TAP_MOVE)) {
             data->three_hold_candidate = false;
+            /* Tap-drag: no longer a double tap -> hold mode engaged. */
+            IQS9151_HAPTIC(dev, IQS9151_HAPTIC_LONG_PRESS);
         }
         if (data->three_tapdrag_second_touch) {
             return true;
