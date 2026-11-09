@@ -56,7 +56,23 @@ static void gesture_tests(void) {
     process(0,100,710);process(0,100,720);assert(effect_count==2); /* release/lock silent */
     fresh();process(1,100,20);process(1,100,30);
     for(int t=40;t<1000;t+=10)process(1,100,t);
-    assert(effect_count==1 && effects[0]==11 && layer_on[4]); /* long-hold drag once */
+    assert(effect_count==0 && layer_on[4]); /* long still press: drag layer, no haptic */
+    for(int t=1000;t<1060;t+=10)process(1,100+(t-1000),t);
+    assert(effect_count==0); /* small wobble (<=100) stays silent */
+    for(int t=1060;t<1200;t+=10)process(1,100+(t-1000),t);
+    assert(effect_count==1 && effects[0]==11); /* real drag movement: once */
+    for(int t=1200;t<1400;t+=10)process(1,300+(t-1200),t);
+    assert(effect_count==1); /* continuing the drag: no repeat */
+    fresh();layer_on[4]=0;process(1,100,20);process(1,100,30);
+    for(int t=40;t<800;t+=10)process(1,100,t);
+    process(0,100,810);process(0,100,820);
+    assert(effect_count==0); /* long press released without moving: silent */
+    process(1,500,900);process(1,500,910);process(0,500,960);process(0,500,970);
+    assert(effect_count==0); /* drag-lock release tap: silent */
+    fresh();layer_on[4]=0;process(1,100,20);process(1,100,30);process(0,100,80);
+    process(1,100,120);for(int t=130;t<500;t+=10)process(1,100,t);
+    process(0,100,510);process(0,100,520);
+    assert(effect_count==1 && effects[0]==2); /* slow second touch without moving: no drag haptic */
     fresh();layer_on[4]=0;process(1,100,20);process(1,100,30);process(0,100,80);
     process(1,100,120);process(1,100,130);process(0,100,180);process(0,100,190);
     assert(effect_count==2 && effects[0]==2 && effects[1]==2 && !layer_on[4]); /* double click: no drag haptic */
