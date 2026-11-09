@@ -497,7 +497,7 @@ config INPUT_IQS9151_HAPTIC_DRAG_BUZZ_EFFECT
     range 0 123
     default 9
     help
-      Effect ID to play repeatedly while hold_button is active (drag/hold).
+      Effect ID to play repeatedly while the cursor moves with a button held (drag). No buzz while the finger is stationary.
       Default 9 (Soft Bump 30%). Set to 0 to disable drag buzz entirely.
 
 config INPUT_IQS9151_HAPTIC_DRAG_BUZZ_INTERVAL_MS

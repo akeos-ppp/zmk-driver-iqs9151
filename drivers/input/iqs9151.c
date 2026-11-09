@@ -332,16 +332,25 @@ static void iqs9151_haptic_drag_buzz_work_cb(struct k_work *work) {
         CONTAINER_OF(dwork, struct iqs9151_data, haptic_drag_buzz_work);
     const struct iqs9151_config *cfg = data->dev->config;
 
+    /*
+     * One pulse per kick. No self-rescheduling: the buzz only continues
+     * while cursor movement keeps kicking it (see report_frame_events).
+     */
     if (cfg->haptic_dev != NULL && data->hold_button != 0U) {
         (void)drv2605_play_effect(cfg->haptic_dev,
                                   CONFIG_INPUT_IQS9151_HAPTIC_DRAG_BUZZ_EFFECT);
-        k_work_schedule(&data->haptic_drag_buzz_work,
-                        K_MSEC(CONFIG_INPUT_IQS9151_HAPTIC_DRAG_BUZZ_INTERVAL_MS));
     }
 }
 
-static inline void iqs9151_haptic_drag_buzz_start(struct iqs9151_data *data) {
-    if (CONFIG_INPUT_IQS9151_HAPTIC_DRAG_BUZZ_EFFECT == 0) {
+/*
+ * Called on each frame that moves the cursor while a button is held.
+ * k_work_schedule() leaves an already-pending item untouched, so continuous
+ * motion yields at most one pulse per DRAG_BUZZ_INTERVAL_MS, and the buzz
+ * stops once the finger stops moving (stationary long-press, or the
+ * press-hold window after a tap, no longer vibrate).
+ */
+static inline void iqs9151_haptic_drag_buzz_kick(struct iqs9151_data *data) {
+    if (CONFIG_INPUT_IQS9151_HAPTIC_DRAG_BUZZ_EFFECT == 0 || data->hold_button == 0U) {
         return;
     }
     k_work_schedule(&data->haptic_drag_buzz_work,
@@ -355,7 +364,7 @@ static inline void iqs9151_haptic_drag_buzz_stop(struct iqs9151_data *data) {
 #else
 #define IQS9151_HAPTIC(dev, event) ((void)0)
 
-static inline void iqs9151_haptic_drag_buzz_start(struct iqs9151_data *data) { (void)data; }
+static inline void iqs9151_haptic_drag_buzz_kick(struct iqs9151_data *data) { (void)data; }
 static inline void iqs9151_haptic_drag_buzz_stop(struct iqs9151_data *data) { (void)data; }
 #endif
 
@@ -1190,7 +1199,6 @@ static bool iqs9151_emit_hold_press(struct iqs9151_data *data,
 
     iqs9151_report_key_event(dev, button, true, true, K_FOREVER);
     data->hold_button = button;
-    iqs9151_haptic_drag_buzz_start(data);
     return true;
 }
 
@@ -2637,6 +2645,9 @@ static void iqs9151_report_frame_events(const struct device *dev,
     } else if (frame->finger_count == 1U && cursor_moving && !suppress_cursor_tail) {
         iqs9151_report_rel_event(dev, INPUT_REL_X, frame->rel_x, false, K_NO_WAIT);
         iqs9151_report_rel_event(dev, INPUT_REL_Y, frame->rel_y, true, K_NO_WAIT);
+        if (frame->rel_x != 0 || frame->rel_y != 0) {
+            iqs9151_haptic_drag_buzz_kick((struct iqs9151_data *)dev->data);
+        }
     }
 }
 
