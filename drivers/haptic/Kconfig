@@ -5,7 +5,8 @@ config DRV2605
 	help
 	  Enable the TI DRV2605L haptic motor controller driver. Provides
 	  drv2605_play_effect()/drv2605_stop() API and consumes the
-	  "ti,drv2605" devicetree binding.
+	  "zmk,drv2605" devicetree binding (renamed from "ti,drv2605", which
+	  clashes with the Zephyr 4.1 upstream haptics binding).
 
 if DRV2605
 

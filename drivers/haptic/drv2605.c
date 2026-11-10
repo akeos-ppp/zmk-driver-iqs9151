@@ -11,7 +11,7 @@
  * the default for ERM) and selects library 6 (LRA) by default.
  */
 
-#define DT_DRV_COMPAT ti_drv2605
+#define DT_DRV_COMPAT zmk_drv2605
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
